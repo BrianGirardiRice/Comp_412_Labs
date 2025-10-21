@@ -634,24 +634,47 @@ def write_operands(op):
 
 # Helper for allocate_register, gets start_end ranges for registers
 def compute_live_ranges(ir_list):
+    
+    def add_to_ranges_read(r, i):
+        abs_idx = 3*idx+i
+        if r in live_ranges:
+             live_ranges[r][1] = abs_idx
+        else:
+            live_ranges[r] = [abs_idx, abs_idx]
+
+    def add_to_ranges_write(r, i):
+        abs_idx = 3*idx+i
+        if r in live_ranges:
+             intervals.append((r, live_ranges[r][0], live_ranges[r][1]))
+        live_ranges[r] = [abs_idx, abs_idx]
+
+        
+
     intervals = []
     live_ranges = {}
     for idx, op in enumerate(ir_list):
         opc = op.opcode
-        for r in read_operands(op):
-            if r in live_ranges:
-                if opc == "store":
-                    live_ranges[r][1] = 2*idx+1
+        for i, operand in enumerate((op.op1, op.op2, op.op3)):
+            if operand == None:
+                pass
+            elif i == 1:
+                if opc in ("add", "sub", "mult", "lshift", "rshift", "load", "store"):
+                    add_to_ranges_read(r, i)
                 else:
-                    live_ranges[r][1] = 2*idx
-            elif opc == "store":
-                live_ranges[r] = [2*idx+1, 2*idx+1]
-            else:
-                live_ranges[r] = [2*idx, 2*idx]
-        for r in write_operands(op):
-            if r in live_ranges:
-                intervals.append((r, live_ranges[r][0], live_ranges[r][1]))
-            live_ranges[r] = [2*idx+1, 2*idx+1]
+                    pass
+            elif i == 2:
+                if opc in ("add", "sub", "mult", "lshift", "rshift"):
+                    add_to_ranges_read(r, i)
+                else:
+                    pass
+            elif i == 3:
+                if opc in ("add", "sub", "mult", "lshift", "rshift", "load", "loadI"):
+                    add_to_ranges_write(r, i)
+                elif opc == "store":
+                    add_to_ranges_read(r, i)
+                else:
+                    pass
+
     for r, (s, e) in live_ranges.items():
         intervals.append((r, s, e))
     return intervals
@@ -710,9 +733,16 @@ def linear_scan_and_emit(intervals, num_phys):
         
 
     # load_check = True when reading the register, false when writing to it
-    def phys_or_load_or_store(r, load_check=True):
+    def phys_or_load_or_store(r, store=False):
         if r is None:
+            idx += 1
             return None
+        place = idx % 3
+        if place == 0 or place == 1 or store:
+            retrieve_val(r)
+        else if store:
+        
+        
         kind, val = VRToPR.get(r, ("phys", r))
         if kind == "phys":
             return f"r{val}"
@@ -724,18 +754,17 @@ def linear_scan_and_emit(intervals, num_phys):
                 # VR itself is spilled; we can’t restore to a phys register yet
                 return f"spill{VRToPR[r][1]}"
             # otherwise, restore from memory
-            if load_check:
-                for interval in active:
-                    if interval[0] == r and interval[3] == -1:
-                        new_interval = (interval[0], interval[1], interval[2], 1)
-                        active.remove(interval)
-                        active.append(new_interval)
+            for interval in active:
+                if interval[0] == r and interval[3] == -1:
+                    new_interval = (interval[0], interval[1], interval[2], 1)
+                    active.remove(interval)
+                    active.append(new_interval)
 
-                prefix.append(ILOperation(op.line, "loadI", addr, None, f"r{spill_load}"))
-                prefix.append(ILOperation(op.line, "load", f"r{spill_load}", None, f"r{phys}"))
-                busy.append(phys)
+            prefix.append(ILOperation(op.line, "loadI", addr, None, f"r{spill_load}"))
+            prefix.append(ILOperation(op.line, "load", f"r{spill_load}", None, f"r{phys}"))
+            busy.append(phys)
 
-            return f"r{phys}"
+        return f"r{phys}"
 
     def expire_old(current_start):
         #Expire intervals that end before the given start position.
@@ -773,7 +802,8 @@ def linear_scan_and_emit(intervals, num_phys):
                 active.append((my_interval[0], my_interval[2], phys, 1))
 
     expand_active(0)
-    for idx, op in enumerate(ir_list):
+    idx = 0
+    for op in enumerate(ir_list):
         opc = op.opcode
         prefix = []
         suffix = []
@@ -782,38 +812,23 @@ def linear_scan_and_emit(intervals, num_phys):
             if busy_op in VRToPR and VRToPR[busy_op][0] == "phys":
                 busy.append(VRToPR[busy_op][1])
         prep_read()
-        if opc in ("add", "sub", "mult", "lshift", "rshift"):
-            a = phys_or_load_or_store(op.op1, True)
-            b = phys_or_load_or_store(op.op2, True)
-            prep_write()
-            c = phys_or_load_or_store(op.op3, False)
-            allocated_ir.extend(prefix)
-            allocated_ir.append(ILOperation(op.line, opc, a, b, c))
-            allocated_ir.extend(suffix)
-        elif opc == "load":
-            a = phys_or_load_or_store(op.op1, True)
-            prep_write()
-            c = phys_or_load_or_store(op.op3, False)
-            allocated_ir.extend(prefix)
-            allocated_ir.append(ILOperation(op.line, opc, a, None, c))
-            allocated_ir.extend(suffix)
-        elif opc == "store":
-            a = phys_or_load_or_store(op.op1, True)
-            prep_write(True)
-            c = phys_or_load_or_store(op.op3, True)
-            allocated_ir.extend(prefix)
-            allocated_ir.append(ILOperation(op.line, opc, a, None, c))
-            allocated_ir.extend(suffix)
-        elif opc == "loadI":
+        store = False
+        if opc == "store":
+            store = True
+        if opc == "loadI":
             prep_write()
             c = phys_or_load_or_store(op.op3, False)
             allocated_ir.extend(prefix)
             allocated_ir.append(ILOperation(op.line, opc, op.op1, None, c))
             allocated_ir.extend(suffix)
         else:
-            allocated_ir.append(op)
-         
-
+            a = phys_or_load_or_store(op.op1, store)
+            b = phys_or_load_or_store(op.op2, store)
+            prep_write()
+            c = phys_or_load_or_store(op.op3, store)
+            allocated_ir.extend(prefix)
+            allocated_ir.append(ILOperation(op.line, opc, a, b, c))
+            allocated_ir.extend(suffix)
 
     return allocated_ir    
 

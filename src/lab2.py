@@ -439,10 +439,14 @@ class Parser:
 def help_info():
     print("Usage: ./412fe [mode] <filename>")
     print("Modes:")
-    print("  -h          : Show this help message")
-    print("  -s <file>   : Scan the file and print tokens")
-    print("  -p <file>   : Parse the file and report success/errors (default)")
-    print("  -r <file>   : Parse and print the intermediate representation")
+    print(" k   : 3 < k < 64. Reallocates registers with k physical registers")
+    print (" -x : Rename input block and print to stdout. For code check 1.")
+    print (" -h : View help")
+
+
+    #print("  -s <file>   : Scan the file and print tokens")
+    #print("  -p <file>   : Parse the file and report success/errors (default)")
+    #print("  -r <file>   : Parse and print the intermediate representation")
     sys.exit(0)
 
 
@@ -637,17 +641,17 @@ def compute_live_ranges(ir_list):
             if r in live_ranges:
                 opc = op.opcode
                 if opc == "store":
-                    live_ranges[r][1] = idx+1
+                    live_ranges[r][1] = 2*idx+1
                 else:
-                    live_ranges[r][1] = idx
+                    live_ranges[r][1] = 2*idx
             elif opc == "store":
-                live_ranges[r] = [idx+1, idx+1]
+                live_ranges[r] = [2*idx+1, 2*idx+1]
             else:
-                live_ranges[r] = [idx, idx]
+                live_ranges[r] = [2*idx, 2*idx]
         for r in write_operands(op):
             if r in live_ranges:
                 intervals.append((r, live_ranges[r][0], live_ranges[r][1]))
-            live_ranges[r] = [idx+1, idx+1]
+            live_ranges[r] = [2*idx+1, 2*idx+1]
     for r in live_ranges:
         intervals.append((r, live_ranges[r][0], live_ranges[r][1]))
     return intervals
@@ -690,7 +694,15 @@ def linear_scan_and_emit(intervals, num_phys):
         else:
             #spill needed
             spill_possibilities = [(n, e, pr, flag) for (n, e, pr, flag) in candidates if pr not in busy]
-            victim = max(spill_possibilities, key=lambda x: x[1]) #furthest away end
+            #SHOULD NOT HAPPEN
+            if not spill_possibilities:
+                free_regs = [r for r in range(allocatable) if r not in used and r not in busy]
+                if free_regs:
+                    #assign first free
+                    phys = free_regs[0]
+                    reg_map[vr] = ("phys", phys)
+                    return phys
+            victim = max(spill_possibilities, key=lambda x: x[1]) #all r used
             spill_addr = get_spill_slot(victim[0])
             # victim ends after current interval, spill
             prefix.append(ILOperation(op.line, "loadI", spill_addr, None, f"r{spill_store}"))
@@ -748,20 +760,24 @@ def linear_scan_and_emit(intervals, num_phys):
         active = new_active
 
 
-    def add_to_active(interval):
-        phys = add_reg_to_map(interval[0], interval[2])
-        if phys is not None:
-            active.append((interval[0], interval[2], phys, 1))
-
     def prep_write():
-        expire_old(idx+1)
-        expand_active(idx+1)
+        nonlocal busy
+        busy = []
+        expire_old(2*idx+1)
+        expand_active(2*idx+1)
+    
+    def prep_read():
+        expire_old(2*idx)
+        expand_active(2*idx)
+
 
 
     def expand_active(threshold):
         while detachable_intervals and detachable_intervals[0][1] == threshold:
             my_interval = detachable_intervals.pop(0)
-            add_to_active(my_interval)
+            phys = add_reg_to_map(my_interval[0], my_interval[2])
+            if phys is not None:
+                active.append((my_interval[0], my_interval[2], phys, 1))
 
     expand_active(0)
     for idx, op in enumerate(ir_list):
@@ -772,6 +788,7 @@ def linear_scan_and_emit(intervals, num_phys):
         for busy_op in (op.op1, op.op2, op.op3):
             if busy_op in reg_map and reg_map[busy_op][0] == "phys":
                 busy.append(reg_map[busy_op][1])
+        prep_read()
         if opc in ("add", "sub", "mult", "lshift", "rshift"):
             a = phys_or_load_or_store(op.op1, True)
             b = phys_or_load_or_store(op.op2, True)
@@ -875,8 +892,19 @@ if __name__ == "__main__":
         print("Usage: 412alloc k <input_file>", file=sys.stderr)
         sys.exit(1)
 
+    if args[0] == "-x":
+        filename = args[1]
+        scanner = Scanner(filename)
+        parser = Parser(scanner=scanner)
+        success, ir_list = parser.parse()
+        if not success:
+            sys.exit(1)
+        mapping = rename_ir_map(ir_list)
+        print_renamed(ir_list, mapping)
+        sys.exit(1)
+
     try:
-        k = int(sys.argv[1])
+        k = int(args[0])
     except ValueError:
         print(f"Invalid register count '{sys.argv[1]}'", file=sys.stderr)
         sys.exit(1)

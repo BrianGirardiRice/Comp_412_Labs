@@ -694,15 +694,11 @@ def linear_scan_and_emit(intervals, num_phys):
         else:
             #spill needed
             spill_possibilities = [(n, e, pr, flag) for (n, e, pr, flag) in candidates if pr not in busy]
-            #SHOULD NOT HAPPEN
+            #SHOULD NOT HAPPEN, adapting for when it does
             if not spill_possibilities:
-                free_regs = [r for r in range(allocatable) if r not in used and r not in busy]
-                if free_regs:
-                    #assign first free
-                    phys = free_regs[0]
-                    reg_map[vr] = ("phys", phys)
-                    return phys
-            victim = max(spill_possibilities, key=lambda x: x[1]) #all r used
+                spill_possibilities = candidates
+
+            victim = max(spill_possibilities, key=lambda x: x[1]) #candidates
             spill_addr = get_spill_slot(victim[0])
             # victim ends after current interval, spill
             prefix.append(ILOperation(op.line, "loadI", spill_addr, None, f"r{spill_store}"))

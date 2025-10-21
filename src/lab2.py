@@ -658,10 +658,9 @@ def linear_scan_and_emit(intervals, num_phys):
     detachable_intervals = sorted_intervals.copy()
 
     # reserves two spots for spills
-    spill_regs = [num_phys - 2, num_phys - 1] 
-    spill_load = spill_regs[0]
-    spill_store = spill_regs[1]
-    allocatable = num_phys-2 
+    spill_load = num_phys - 1
+    spill_store = num_phys - 1
+    allocatable = num_phys-1
 
     active = [] # list of touples (virt_reg, end, phys)
     reg_map = {} # maps virt_reg to ("phys"/"spill", num/addr)
@@ -706,7 +705,7 @@ def linear_scan_and_emit(intervals, num_phys):
         
 
     # load_check = True when reading the register, false when writing to it
-    def phys_or_load_or_store(r, load_check):
+    def phys_or_load_or_store(r, load_check=True):
         if r is None:
             return None
         kind, val = reg_map.get(r, ("phys", r))
@@ -770,7 +769,7 @@ def linear_scan_and_emit(intervals, num_phys):
         prefix = []
         suffix = []
         busy = []
-        for busy_op in (op.op1, op.op2, op.op3):
+        for busy_op in (op.op1, op.op2):
             if busy_op in reg_map and reg_map[busy_op][0] == "phys":
                 busy.append(reg_map[busy_op][1])
         prep_read()

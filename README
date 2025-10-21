@@ -1,0 +1,17 @@
+//NAME: Brian Girardi
+//NETID: bjg5
+
+Build:
+  # Nothing to build. Run below to ensure 412alloc is executable:
+  chmod a+x 412alloc
+
+  # Or use the Makefile:
+  make build
+
+Run:
+  ./412alloc -h
+      Prints usage information for all available modes and exits.
+
+  ./412alloc k <input_file>
+      Performs register allocation on <input_file> using at most k registers
+      (3 ≤ k ≤ 64).  Prints the allocated ILOC block to standard output.

@@ -1,0 +1,15 @@
+
+#testrun
+with open("test.iloc", "w") as f:
+    f.write("""
+add r1, r2 => r3
+loadI 42 => r1
+nop
+bogus r1, r2 => r3
+r1, 99999999999 => r2
+""")
+
+scanner = Scanner("test.iloc")
+tokens = scanner.scan()  # your existing scan() method
+for t in tokens:
+    print(f"Line {t.line}: {t.category:10} '{t.lexeme}'")

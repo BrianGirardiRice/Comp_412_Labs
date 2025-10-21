@@ -664,7 +664,7 @@ def linear_scan_and_emit(intervals, num_phys):
     # reserves two spots for spills
     spill_load = num_phys - 1
     spill_store = num_phys - 1
-    allocatable = num_phys-1 
+    allocatable = num_phys - 1 
 
     active = [] # list of touples (virt_reg, end, phys)
     reg_map = {} # maps virt_reg to ("phys"/"spill", num/addr)
@@ -683,7 +683,7 @@ def linear_scan_and_emit(intervals, num_phys):
         nonlocal next_spill_addr
         #find free physicals
         candidates = [v for v in active if v[3] == 1]  
-        used = {phys for (_ ,_ , phys, _) in candidates}
+        used = {phys for (_ ,_ , phys, flag) in candidates if flag == 1}
         free_regs = [r for r in range(allocatable) if r not in used and r not in busy]
         if free_regs:
             #assign first free
@@ -693,9 +693,6 @@ def linear_scan_and_emit(intervals, num_phys):
         else:
             #spill needed
             spill_possibilities = [(n, e, pr, flag) for (n, e, pr, flag) in candidates if pr not in busy]
-            #SHOULD NOT HAPPEN, adapting for when it does
-            if not spill_possibilities:
-                spill_possibilities = candidates
 
             victim = max(spill_possibilities, key=lambda x: x[1]) #candidates
             spill_addr = get_spill_slot(victim[0])
@@ -755,9 +752,10 @@ def linear_scan_and_emit(intervals, num_phys):
         active = new_active
 
 
-    def prep_write():
+    def prep_write(store = False):
         nonlocal busy
-        busy = []
+        if not store:
+            busy = []
         expire_old(2*idx+1)
         expand_active(2*idx+1)
     
@@ -780,7 +778,7 @@ def linear_scan_and_emit(intervals, num_phys):
         prefix = []
         suffix = []
         busy = []
-        for busy_op in (op.op1, op.op2, op.op3):
+        for busy_op in (op.op1, op.op2):
             if busy_op in reg_map and reg_map[busy_op][0] == "phys":
                 busy.append(reg_map[busy_op][1])
         prep_read()
@@ -801,7 +799,7 @@ def linear_scan_and_emit(intervals, num_phys):
             allocated_ir.extend(suffix)
         elif opc == "store":
             a = phys_or_load_or_store(op.op1, True)
-            prep_write()
+            prep_write(True)
             c = phys_or_load_or_store(op.op3, True)
             allocated_ir.extend(prefix)
             allocated_ir.append(ILOperation(op.line, opc, a, None, c))

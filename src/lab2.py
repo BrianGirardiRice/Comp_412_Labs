@@ -662,10 +662,9 @@ def linear_scan_and_emit(intervals, num_phys):
     detachable_intervals = sorted_intervals.copy()
 
     # reserves two spots for spills
-    spill_regs = [num_phys - 2, num_phys - 1] 
-    spill_load = spill_regs[0]
-    spill_store = spill_regs[1]
-    allocatable = num_phys-2 
+    spill_load = num_phys - 1
+    spill_store = num_phys - 1
+    allocatable = num_phys-1 
 
     active = [] # list of touples (virt_reg, end, phys)
     reg_map = {} # maps virt_reg to ("phys"/"spill", num/addr)

@@ -668,6 +668,7 @@ def linear_scan_and_emit(intervals, num_phys):
 
     active = [] # list of touples (virt_reg, end, phys)
     VRToPR = {} # maps virt_reg to ("phys"/"spill", num/addr)
+    PRToVR = {i: None for i in range(allocatable)} # Maps each phys_reg to what it currently holds
     next_spill_addr = 32768
     allocated_ir = []
 
@@ -679,34 +680,35 @@ def linear_scan_and_emit(intervals, num_phys):
             next_spill_addr += 4
         return spill_slot_map[vr]
         
-    def add_reg_to_map(vr, end):
+    def add_reg_to_map(vr):
         nonlocal next_spill_addr
         #find free physicals
-        candidates = [v for v in active if v[3] == 1]  
-        used = {phys for (_ ,_ , phys, flag) in candidates if flag == 1}
-        free_regs = [r for r in range(allocatable) if r not in used and r not in busy]
-        if free_regs:
-            #assign first free
-            phys = free_regs[0]
-            VRToPR[vr] = ("phys", phys)
-            return phys
-        else:
-            #spill needed
-            spill_possibilities = [(n, e, pr, flag) for (n, e, pr, flag) in candidates if pr not in busy]
+        for i in range(0, allocatable):
+            if PRToVR[i] is None:
+                PRToVR[i] = vr
+                VRToPR[vr]= ("phys", i)
+                return i
+        #spill needed
+        spill_possibilities = [vr for (pr, vr) in PRToVR.items() if pr not in busy]
+        eligible = [entry for entry in active if entry[0] if entry[2] == 1 and entry[0] in spill_possibilities]
 
-            victim = max(spill_possibilities, key=lambda x: x[1]) #candidates
-            spill_addr = get_spill_slot(victim[0])
-            # victim ends after current interval, spill
-            prefix.append(ILOperation(op.line, "loadI", spill_addr, None, f"r{spill_store}"))
-            prefix.append(ILOperation(op.line, "store", f"r{victim[2]}", None, f"r{spill_store}"))
-            VRToPR[victim[0]] = ("spill", spill_addr)
-            #replace victim in active
-            active.remove(victim)
-            victim = (victim[0], victim[1], victim[2], -1)
-            active.append(victim)
-            phys = victim[2]
-            VRToPR[vr] = ("phys", phys)
-            return phys
+        victim = max(eligible, key=lambda x: x[1]) #candidates
+        victim_vr, _, _ = victim
+        spill_addr = get_spill_slot(victim_vr)
+        # victim ends after current interval, spill
+        replaced_phys = VRToPR[victim_vr][1]
+        prefix.append(ILOperation(op.line, "loadI", spill_addr, None, f"r{spill_store}"))
+        prefix.append(ILOperation(op.line, "store", f"r{replaced_phys}", None, f"r{spill_store}"))
+        VRToPR[victim[0]] = ("spill", spill_addr)
+        #replace victim in active
+        replaced_victim = (victim[0], victim[1], -1)
+        active.remove(victim)
+        active.append(replaced_victim)
+
+        PRToVR[replaced_phys] = vr
+        VRToPR[vr] = ("phys", replaced_phys)
+        
+        return replaced_phys
         
 
     # load_check = True when reading the register, false when writing to it
@@ -719,15 +721,12 @@ def linear_scan_and_emit(intervals, num_phys):
         else:
             #retrieval
             addr = spill_slot_map[r]
-            phys = add_reg_to_map(r, end=idx)
-            if phys is None:
-                # VR itself is spilled; we can’t restore to a phys register yet
-                return f"spill{VRToPR[r][1]}"
+            phys = add_reg_to_map(r)
             # otherwise, restore from memory
             if load_check:
                 for interval in active:
-                    if interval[0] == r and interval[3] == -1:
-                        new_interval = (interval[0], interval[1], interval[2], 1)
+                    if interval[0] == r and interval[2] == -1:
+                        new_interval = (interval[0], interval[1], 1)
                         active.remove(interval)
                         active.append(new_interval)
 
@@ -741,14 +740,17 @@ def linear_scan_and_emit(intervals, num_phys):
         #Expire intervals that end before the given start position.
         nonlocal active, VRToPR
         new_active = []
-        for (vr, end, phys, spilled) in active:
+        for (vr, end, spilled) in active:
             if end >= current_start:
-                new_active.append((vr, end, phys, spilled))
+                new_active.append((vr, end, spilled))
             else:
                 # this virtual register's live range ended before now
                 # free its mapping
                 if VRToPR.get(vr, (None, None))[0] == "phys":
+                    pr = VRToPR[vr][1] 
+                    PRToVR[pr] = None
                     del VRToPR[vr]
+
         active = new_active
 
 
@@ -757,7 +759,7 @@ def linear_scan_and_emit(intervals, num_phys):
         if not store:
             busy = []
         expire_old(2*idx+1)
-        expand_active(2*idx+1)
+        expand_active(2*idx+1, write = True, store = store)
     
     def prep_read():
         expire_old(2*idx)
@@ -765,12 +767,12 @@ def linear_scan_and_emit(intervals, num_phys):
 
 
 
-    def expand_active(threshold):
+    def expand_active(threshold, write = False, store = False):
         while detachable_intervals and detachable_intervals[0][1] == threshold:
             my_interval = detachable_intervals.pop(0)
-            phys = add_reg_to_map(my_interval[0], my_interval[2])
-            if phys is not None:
-                active.append((my_interval[0], my_interval[2], phys, 1))
+            active.append((my_interval[0], my_interval[2], 1))
+            if write and not store:
+                add_reg_to_map(op.op3)
 
     expand_active(0)
     for idx, op in enumerate(ir_list):
@@ -816,34 +818,6 @@ def linear_scan_and_emit(intervals, num_phys):
 
 
     return allocated_ir    
-
-# apply a renaming pass to IR so virtual registers are dense 0..N-1
-def apply_rename_mapping(ir_list, mapping):
-    # produce a new IR list (or mutate) using mapping for register operands
-    new_ir = []
-    for op in ir_list:
-        opc = op.opcode
-        if opc in ("add", "sub", "mult", "lshift", "rshift"):
-            new_op1 = mapping.get(op.op1, None)
-            new_op2 = mapping.get(op.op2, None)
-            new_op3 = mapping.get(op.op3, None)
-            new_ir.append(ILOperation(op.line, opc, new_op1, new_op2, new_op3))
-        elif opc == "load":
-            new_op1 = mapping.get(op.op1, None)
-            new_op3 = mapping.get(op.op3, None)
-            new_ir.append(ILOperation(op.line, opc, new_op1, None, new_op3))
-        elif opc == "store":
-            new_op1 = mapping.get(op.op1, None)
-            new_op3 = mapping.get(op.op3, None)
-            new_ir.append(ILOperation(op.line, opc, new_op1, None, new_op3))
-        elif opc == "loadI":
-            # op.op1 is constant, op.op3 is destination reg
-            new_op3 = mapping.get(op.op3, None)
-            new_ir.append(ILOperation(op.line, opc, op.op1, None, new_op3))
-        else:
-            # output, nop or others
-            new_ir.append(ILOperation(op.line, opc, op.op1, op.op2, op.op3))
-    return new_ir
 
 
 #Linear resister allocation, maps renamed registers (r0, r1, ...) to physical registers

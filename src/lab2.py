@@ -690,9 +690,9 @@ def linear_scan_and_emit(intervals, num_phys):
                 return i
         #spill needed
         spill_possibilities = [vr for (pr, vr) in PRToVR.items() if pr not in busy]
-        eligible = [entry for entry in active if entry[0] if entry[2] == 1 and entry[0] in spill_possibilities]
+        eligible = [entry for entry in active if entry[2] == 1 and entry[0] in spill_possibilities] #candidates
 
-        victim = max(eligible, key=lambda x: x[1]) #candidates
+        victim = max(eligible, key=lambda x: x[1])
         victim_vr, _, _ = victim
         spill_addr = get_spill_slot(victim_vr)
         # victim ends after current interval, spill

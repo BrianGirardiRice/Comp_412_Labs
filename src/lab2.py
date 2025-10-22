@@ -589,11 +589,6 @@ def compute_live_ranges(ir_list):
     return intervals
 
 def linear_scan_and_emit(intervals, num_phys):
-    OPCODES = {
-    "load": 0, "loadI": 1, "store": 2,
-    "add": 3, "sub": 4, "mult": 5,
-    "lshift": 6, "rshift": 7, "output": 8, "nop": 9
-    }
     
     intervals_with_flag = [(reg, start, end, 1) for (reg, start, end) in intervals]
     sorted_intervals = sorted(intervals_with_flag, key=lambda x: x[1])

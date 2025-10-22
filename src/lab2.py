@@ -515,78 +515,6 @@ def print_renamed(ir_list, mapping):
         else:
             print(f"# Unknown opcode {opc}", file=sys.stderr)
 
-"""
-def allocate_and_emit_ir(ir_list, num_phys = 16):
-    spill_regs = [num_phys - 2, num_phys - 1] 
-    allocatable = num_phys-2 
-
-    active = [] # list of touples (virt_reg, end, phys)
-    reg_map = {} # maps virt_reg to ("phys"/"spill", num/addr)
-    emitted_ir = []
-
-    live_ranges = compute_live_ranges(ir_list)
-    for idx, op in enumerate(ir_list):
-        reg_operands == get_register_operands(op)
-        active = [(vr, e, phys) for (vr, e, phys) in active if e >= start]
-        #find free physicals
-        used = {phys for (_ ,_ , phys) in active}
-        free_regs = [r for r in range(allocatable) if r not in used]
-        
-        # Helper: get physical register or insert spill code
-        def phys_or_spill(vr, is_read):
-            if vr is None:
-                return None
-            kind, val = reg_map.get(vr, ("phys", vr))
-            if kind == "phys":
-                return f"r{val}"
-            else:
-                # need to load/store from spill
-                addr = val
-                if is_read:
-                    emitted_ir.append(ILOperation(op.line, "loadI", addr, None, spill_regs[0]))
-                    emitted_ir.append(ILOperation(op.line, "load", spill_regs[0], None, spill_regs[1]))
-                    return f"r{spill_regs[1]}"
-                else:
-                    emitted_ir.append(ILOperation(op.line, "store", spill_regs[1], None, spill_regs[0]))
-                    emitted_ir.append(ILOperation(op.line, "loadI", addr, None, spill_regs[1]))
-                    return f"r{spill_regs[1]}"
-
-        # Assign registers for operands/dest
-        for vr in [op.op1, op.op2, op.op3]:
-            if vr is None or vr in reg_map:
-                continue
-            if free_regs:
-                phys = free_regs.pop(0)
-                reg_map[vr] = ("phys", phys)
-                # Add to active
-                start, end = live_ranges[vr]
-                active.append((vr, end, phys))
-            else:
-                # Spill victim with furthest end
-                victim = max(active, key=lambda x: x[1])
-                spill_addr = next_spill_addr
-                next_spill_addr += 4
-                if victim[1] > live_ranges[vr][1]:
-                    # spill victim
-                    reg_map[victim[0]] = ("spill", spill_addr)
-                    active.remove(victim)
-                    phys = victim[2]
-                    reg_map[vr] = ("phys", phys)
-                    active.append((vr, live_ranges[vr][1], phys))
-                else:
-                    # spill current vr
-                    reg_map[vr] = ("spill", spill_addr)
-
-        # Emit instruction using current mapping
-        opc = op.opcode
-        a = phys_or_spill(op.op1, True) if hasattr(op, 'op1') else None
-        b = phys_or_spill(op.op2, True) if hasattr(op, 'op2') else None
-        c = phys_or_spill(op.op3, False) if hasattr(op, 'op3') else None
-
-        emitted_ir.append(ILOperation(op.line, opc, a, b, c))
-
-    return emitted_ir
-"""
 
 
 # Abstracts code for rename_ir_map and allocate_registers.
@@ -663,7 +591,7 @@ def linear_scan_and_emit(intervals, num_phys):
     spill_store = num_phys - 1
     allocatable = num_phys - 1 
 
-    active = [] # list of touples (virt_reg, end, phys)
+    active = {} # list of touples (virt_reg, end, phys)
     VRToPR = {} # maps virt_reg to ("phys"/"spill", num/addr)
     PRToVR = {i: None for i in range(allocatable)} # Maps each phys_reg to what it currently holds
     next_spill_addr = 32768
@@ -691,8 +619,7 @@ def linear_scan_and_emit(intervals, num_phys):
                 return i
         #spill needed
         spill_possibilities = [vr for (pr, vr) in PRToVR.items() if pr not in busy]
-        eligible = [entry for entry in active if entry[2] == 1 and entry[0] in spill_possibilities] #candidates
-
+        eligible = [(vr, active[vr][0], active[vr][1]) for vr in spill_possibilities if vr in active and active[vr][1] == 1]
         victim = max(eligible, key=lambda x: x[1])
         victim_vr, _, _ = victim
         spill_addr = get_spill_slot(victim_vr)
@@ -701,10 +628,9 @@ def linear_scan_and_emit(intervals, num_phys):
         prefix.append(ILOperation(op.line, "loadI", spill_addr, None, f"r{spill_store}"))
         prefix.append(ILOperation(op.line, "store", f"r{replaced_phys}", None, f"r{spill_store}"))
         VRToPR[victim[0]] = ("spill", spill_addr)
-        #replace victim in active
-        replaced_victim = (victim[0], victim[1], -1)
-        active.remove(victim)
-        active.append(replaced_victim)
+        #change flag of victim in active
+        replaced_touple = (victim[1], -1)
+        active[victim_vr] = replaced_touple
 
         PRToVR[replaced_phys] = vr
         VRToPR[vr] = ("phys", replaced_phys)
@@ -713,23 +639,21 @@ def linear_scan_and_emit(intervals, num_phys):
         
 
     # load_check = True when reading the register, false when writing to it
-    def phys_or_load_or_store(r, load_check=True):
-        if r is None:
+    def phys_or_load_or_store(vr, load_check=True):
+        if vr is None:
             return None
-        kind, val = VRToPR.get(r, (None, r))
+        kind, val = VRToPR.get(vr, (None, vr))
         if kind == "phys":
             return f"r{val}"
         else:
             #retrieval
-            addr = VRToSpillLoc[r]
-            phys = add_reg_to_map(r)
+            addr = VRToSpillLoc[vr]
+            phys = add_reg_to_map(vr)
             # otherwise, restore from memory
             if load_check:
-                for interval in active:
-                    if interval[0] == r and interval[2] == -1:
-                        new_interval = (interval[0], interval[1], 1)
-                        active.remove(interval)
-                        active.append(new_interval)
+                if vr in active and active[vr][1] == -1:
+                    new_touple = (active[vr][0], 1)
+                    active[vr] = new_touple
                 if addr <= 0:
                     prefix.append(ILOperation(op.line, "loadI", -1*addr, None, f"r{phys}"))
                 else:
@@ -741,20 +665,14 @@ def linear_scan_and_emit(intervals, num_phys):
 
     def expire_old(current_start):
         #Expire intervals that end before the given start position.
-        nonlocal active, VRToPR
-        new_active = []
-        for (vr, end, spilled) in active:
-            if end >= current_start:
-                new_active.append((vr, end, spilled))
-            else:
-                # this virtual register's live range ended before now
-                # free its mapping
+        for vr in list(active.keys()):
+            (end, _) = active[vr]
+            if end < current_start:
+                del active[vr]
                 if VRToPR.get(vr, (None, None))[0] == "phys":
-                    pr = VRToPR[vr][1] 
+                    pr = VRToPR[vr][1]
                     PRToVR[pr] = None
                     del VRToPR[vr]
-
-        active = new_active
 
 
     def prep_write(store = False):
@@ -773,7 +691,8 @@ def linear_scan_and_emit(intervals, num_phys):
     def expand_active(threshold, write = False, store = False):
         while detachable_intervals and detachable_intervals[0][1] == threshold:
             my_interval = detachable_intervals.pop(0)
-            active.append((my_interval[0], my_interval[2], 1))
+            vr = my_interval[0]
+            active[vr] =  (my_interval[2], 1)
             if write and not store:
                 add_reg_to_map(op.op3)
 

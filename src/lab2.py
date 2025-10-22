@@ -708,16 +708,10 @@ def linear_scan_and_emit(intervals, num_phys):
             if write and not store:
                 add_reg_to_map(op.op3)
 
-
-    OPCODES = {
-    "load": 0, "loadI": 1, "store": 2,
-    "add": 3, "sub": 4, "mult": 5,
-    "lshift": 6, "rshift": 7, "output": 8, "nop": 9
-    }
     expand_active(0)
     for idx, op in enumerate(ir_list):
         opc = op.opcode
-        opn = OPCODES[opc]
+        opn = op.opname
         prefix = []
         busy = []
         for busy_op in (op.op1, op.op2):

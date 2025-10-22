@@ -125,6 +125,12 @@ class ILOperation:
         # linked list pointers
         self.prev = None
         self.next = None
+        OPCODES = {
+        "load": 0, "loadI": 1, "store": 2,
+        "add": 3, "sub": 4, "mult": 5,
+        "lshift": 6, "rshift": 7, "output": 8, "nop": 9
+        }
+        self.opname = OPCODES[opcode]
 
     def __repr__(self):
         return f"ILOp(line={self.line}, {self.opcode}, {self.op1},{self.op2},{self.op3})"
@@ -538,20 +544,20 @@ def get_register_operands(op):
         return []
 
 def read_operands(op):
-    opc = op.opcode
-    if opc in ("add", "sub", "mult", "lshift", "rshift"):
+    opn = op.opname
+    if 3 <= opn <= 7:
         # src1, src2, dest
         return [op.op1, op.op2]
-    elif opc in ("load"):
+    elif opn == 0:
         return [op.op1]
-    elif opc == "store":
+    elif opn == 2:
         return [op.op1, op.op3]
     else:
         return []
 
 def write_operands(op):
-    opc = op.opcode
-    if opc in ("add", "sub", "mult", "lshift", "rshift", "load"):
+    opn = op.opname
+    if 3 <= opn <= 7 or opn == 0:
         # src1, src2, dest
         return [op.op3]
     else:
@@ -563,14 +569,14 @@ def compute_live_ranges(ir_list):
     intervals = []
     live_ranges = {}
     for idx, op in enumerate(ir_list):
-        opc = op.opcode
+        opn = op.opname
         for r in read_operands(op):
             if r in live_ranges:
-                if opc == "store":
+                if opn == 2:
                     live_ranges[r][1] = 2*idx+1
                 else:
                     live_ranges[r][1] = 2*idx
-            elif opc == "store":
+            elif opn == 2:
                 live_ranges[r] = [2*idx+1, 2*idx+1]
             else:
                 live_ranges[r] = [2*idx, 2*idx]

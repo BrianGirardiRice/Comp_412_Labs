@@ -725,19 +725,19 @@ def linear_scan_and_emit(intervals, num_phys):
             c = phys_or_load_or_store(op.op3, False)
             allocated_ir.extend(prefix)
             allocated_ir.append(ILOperation(op.line, opc, a, b, c))
-        elif opc == 0:
+        elif opn == 0:
             a = phys_or_load_or_store(op.op1, True)
             prep_write()
             c = phys_or_load_or_store(op.op3, False)
             allocated_ir.extend(prefix)
             allocated_ir.append(ILOperation(op.line, opc, a, None, c))
-        elif opc == 2:
+        elif opn == 2:
             a = phys_or_load_or_store(op.op1, True)
             prep_write(True)
             c = phys_or_load_or_store(op.op3, True)
             allocated_ir.extend(prefix)
             allocated_ir.append(ILOperation(op.line, opc, a, None, c))
-        elif opc == 1:
+        elif opn == 1:
             prep_write()
             VRToSpillLoc[op.op3] = -1*op.op1
         else:

@@ -587,11 +587,10 @@ def linear_scan_and_emit(intervals, num_phys):
     detachable_intervals = sorted_intervals.copy()
 
     # reserves two spots for spills
-    spill_load = num_phys - 1
-    spill_store = num_phys - 1
+    spill_pr = num_phys - 1
     allocatable = num_phys - 1 
 
-    active = {} # list of touples (virt_reg, end, phys)
+    active_map = {} # list of touples (virt_reg, end, phys)
     VRToPR = {} # maps virt_reg to ("phys"/"spill", num/addr)
     PRToVR = {i: None for i in range(allocatable)} # Maps each phys_reg to what it currently holds
     next_spill_addr = 32768
@@ -619,18 +618,18 @@ def linear_scan_and_emit(intervals, num_phys):
                 return i
         #spill needed
         spill_possibilities = [vr for (pr, vr) in PRToVR.items() if pr not in busy]
-        eligible = [(vr, active[vr][0], active[vr][1]) for vr in spill_possibilities if vr in active and active[vr][1] == 1]
+        eligible = [(vr, active_map[vr][0], active_map[vr][1]) for vr in spill_possibilities if vr in active_map and active_map[vr][1] == 1]
         victim = max(eligible, key=lambda x: x[1])
         victim_vr, _, _ = victim
         spill_addr = get_spill_slot(victim_vr)
         # victim ends after current interval, spill
         replaced_phys = VRToPR[victim_vr][1]
-        prefix.append(ILOperation(op.line, "loadI", spill_addr, None, f"r{spill_store}"))
-        prefix.append(ILOperation(op.line, "store", f"r{replaced_phys}", None, f"r{spill_store}"))
+        prefix.append(ILOperation(op.line, "loadI", spill_addr, None, f"r{spill_pr}"))
+        prefix.append(ILOperation(op.line, "store", f"r{replaced_phys}", None, f"r{spill_pr}"))
         VRToPR[victim[0]] = ("spill", spill_addr)
         #change flag of victim in active
         replaced_touple = (victim[1], -1)
-        active[victim_vr] = replaced_touple
+        active_map[victim_vr] = replaced_touple
 
         PRToVR[replaced_phys] = vr
         VRToPR[vr] = ("phys", replaced_phys)
@@ -651,24 +650,24 @@ def linear_scan_and_emit(intervals, num_phys):
             phys = add_reg_to_map(vr)
             # otherwise, restore from memory
             if load_check:
-                if vr in active and active[vr][1] == -1:
-                    new_touple = (active[vr][0], 1)
-                    active[vr] = new_touple
+                if vr in active_map and active_map[vr][1] == -1:
+                    new_touple = (active_map[vr][0], 1)
+                    active_map[vr] = new_touple
                 if addr <= 0:
                     prefix.append(ILOperation(op.line, "loadI", -1*addr, None, f"r{phys}"))
                 else:
-                    prefix.append(ILOperation(op.line, "loadI", addr, None, f"r{spill_load}"))
-                    prefix.append(ILOperation(op.line, "load", f"r{spill_load}", None, f"r{phys}"))
+                    prefix.append(ILOperation(op.line, "loadI", addr, None, f"r{spill_pr}"))
+                    prefix.append(ILOperation(op.line, "load", f"r{spill_pr}", None, f"r{phys}"))
                 busy.append(phys)
 
             return f"r{phys}"
 
     def expire_old(current_start):
         #Expire intervals that end before the given start position.
-        for vr in list(active.keys()):
-            (end, _) = active[vr]
+        for vr in list(active_map.keys()):
+            (end, _) = active_map[vr]
             if end < current_start:
-                del active[vr]
+                del active_map[vr]
                 if VRToPR.get(vr, (None, None))[0] == "phys":
                     pr = VRToPR[vr][1]
                     PRToVR[pr] = None
@@ -692,7 +691,7 @@ def linear_scan_and_emit(intervals, num_phys):
         while detachable_intervals and detachable_intervals[0][1] == threshold:
             my_interval = detachable_intervals.pop(0)
             vr = my_interval[0]
-            active[vr] =  (my_interval[2], 1)
+            active_map[vr] =  (my_interval[2], 1)
             if write and not store:
                 add_reg_to_map(op.op3)
 
@@ -700,7 +699,6 @@ def linear_scan_and_emit(intervals, num_phys):
     for idx, op in enumerate(ir_list):
         opc = op.opcode
         prefix = []
-        suffix = []
         busy = []
         for busy_op in (op.op1, op.op2):
             if busy_op in VRToPR and VRToPR[busy_op][0] == "phys":
@@ -713,21 +711,18 @@ def linear_scan_and_emit(intervals, num_phys):
             c = phys_or_load_or_store(op.op3, False)
             allocated_ir.extend(prefix)
             allocated_ir.append(ILOperation(op.line, opc, a, b, c))
-            allocated_ir.extend(suffix)
         elif opc == "load":
             a = phys_or_load_or_store(op.op1, True)
             prep_write()
             c = phys_or_load_or_store(op.op3, False)
             allocated_ir.extend(prefix)
             allocated_ir.append(ILOperation(op.line, opc, a, None, c))
-            allocated_ir.extend(suffix)
         elif opc == "store":
             a = phys_or_load_or_store(op.op1, True)
             prep_write(True)
             c = phys_or_load_or_store(op.op3, True)
             allocated_ir.extend(prefix)
             allocated_ir.append(ILOperation(op.line, opc, a, None, c))
-            allocated_ir.extend(suffix)
         elif opc == "loadI":
             prep_write()
             VRToSpillLoc[op.op3] = -1*op.op1

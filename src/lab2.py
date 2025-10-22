@@ -1,6 +1,7 @@
 import sys
 #import time
 
+
 """
 #Token Class
 class Token:
@@ -582,6 +583,12 @@ def compute_live_ranges(ir_list):
     return intervals
 
 def linear_scan_and_emit(intervals, num_phys):
+    OPCODES = {
+    "load": 0, "loadI": 1, "store": 2,
+    "add": 3, "sub": 4, "mult": 5,
+    "lshift": 6, "rshift": 7, "output": 8, "nop": 9
+    }
+    
     intervals_with_flag = [(reg, start, end, 1) for (reg, start, end) in intervals]
     sorted_intervals = sorted(intervals_with_flag, key=lambda x: x[1])
     detachable_intervals = sorted_intervals.copy()
@@ -695,35 +702,42 @@ def linear_scan_and_emit(intervals, num_phys):
             if write and not store:
                 add_reg_to_map(op.op3)
 
+
+    OPCODES = {
+    "load": 0, "loadI": 1, "store": 2,
+    "add": 3, "sub": 4, "mult": 5,
+    "lshift": 6, "rshift": 7, "output": 8, "nop": 9
+    }
     expand_active(0)
     for idx, op in enumerate(ir_list):
         opc = op.opcode
+        opn = OPCODES[opc]
         prefix = []
         busy = []
         for busy_op in (op.op1, op.op2):
             if busy_op in VRToPR and VRToPR[busy_op][0] == "phys":
                 busy.append(VRToPR[busy_op][1])
         prep_read()
-        if opc in ("add", "sub", "mult", "lshift", "rshift"):
+        if 3 <= opn <= 7:
             a = phys_or_load_or_store(op.op1, True)
             b = phys_or_load_or_store(op.op2, True)
             prep_write()
             c = phys_or_load_or_store(op.op3, False)
             allocated_ir.extend(prefix)
             allocated_ir.append(ILOperation(op.line, opc, a, b, c))
-        elif opc == "load":
+        elif opc == 0:
             a = phys_or_load_or_store(op.op1, True)
             prep_write()
             c = phys_or_load_or_store(op.op3, False)
             allocated_ir.extend(prefix)
             allocated_ir.append(ILOperation(op.line, opc, a, None, c))
-        elif opc == "store":
+        elif opc == 2:
             a = phys_or_load_or_store(op.op1, True)
             prep_write(True)
             c = phys_or_load_or_store(op.op3, True)
             allocated_ir.extend(prefix)
             allocated_ir.append(ILOperation(op.line, opc, a, None, c))
-        elif opc == "loadI":
+        elif opc == 1:
             prep_write()
             VRToSpillLoc[op.op3] = -1*op.op1
         else:

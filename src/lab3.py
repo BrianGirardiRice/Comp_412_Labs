@@ -484,7 +484,6 @@ def build_dependence_graph(ir_list):
     last_def = {}     # reg -> index of last defining op
     last_use = {}     # reg -> index of last using op
     last_store = None
-    last_load = None
     last_output = None
  
     for i, op in enumerate(ir_list):
@@ -502,18 +501,11 @@ def build_dependence_graph(ir_list):
                 preds[i].add(last_def[r])
                 succs[last_def[r]].add(i)
         # Anti-dependencies (WAR)
-        for r in write_operands(op):
-            if r in last_use and last_use[r] != i:
-                preds[i].add(last_use[r])
-                succs[last_use[r]].add(i)
+        # for r in write_operands(op):
+        #     if r in last_use and last_use[r] != i:
+        #         preds[i].add(last_use[r])
+        #         succs[last_use[r]].add(i)
         if op.opcode == "store":
-            # store must wait for:
-            #  - any previous load (to maintain RAW on memory)
-            #  - any previous store (to maintain WAW)
-            if last_load is not None:
-                preds[i].add(last_load)
-                succs[last_load].add(i)
-
             if last_store is not None:
                 preds[i].add(last_store)
                 succs[last_store].add(i)
@@ -531,14 +523,8 @@ def build_dependence_graph(ir_list):
                 preds[i].add(last_store)
                 succs[last_store].add(i)
 
-            last_load = i
-
-
         elif op.opcode == "output":
             # Output must wait for all prior memory ops
-            if last_load is not None:
-                preds[i].add(last_load)
-                succs[last_load].add(i)
             if last_store is not None:
                 preds[i].add(last_store)
                 succs[last_store].add(i)
@@ -555,12 +541,35 @@ def build_dependence_graph(ir_list):
 
     return preds, succs
 
+def compute_distance_to_exit(ir_list, succs):
+    n = len(ir_list)
+    dist = [0] * n
+
+    # simple reverse topological-like order
+    order = sorted(range(n), key=lambda i: -len(succs[i]))
+
+    changed = True
+    while changed:
+        changed = False
+        for i in order:
+            best = 0
+            for s in succs[i]:
+                cand = ir_list[s].latency() + dist[s]
+                if cand > best:
+                    best = cand
+            if best != dist[i]:
+                dist[i] = best
+                changed = True
+    return dist
+
 def list_schedule(ir_list):
     n = len(ir_list)
     if n == 0:
         return []
 
     preds, succs = build_dependence_graph(ir_list)
+    dist = compute_distance_to_exit(ir_list, succs)
+
 
     in_deg = [len(preds[i]) for i in range(n)]
     ready = {i for i in range(n) if in_deg[i] == 0}
@@ -591,7 +600,10 @@ def list_schedule(ir_list):
 
         # priority: longer latency first, then more successors, then original line
         candidates.sort(
-            key=lambda i: (-ir_list[i].latency(), -len(succs[i]), ir_list[i].line)
+        key=lambda i: (-dist[i],
+            -ir_list[i].latency(),
+            -len(succs[i]),
+            ir_list[i].line)
         )
         for i in candidates:
             if len(chosen) == 2:
@@ -606,13 +618,13 @@ def list_schedule(ir_list):
 
             u = op.units()
             # try to assign f0 or f1 without conflict
-            if "f0" in u and not have_f0:
-                have_f0 = True
+            if "f1" in u and not have_f1:
+                have_f1 = True
                 if op.opcode == "output":
                     have_output = True
                 chosen.append(i)
-            elif "f1" in u and not have_f1:
-                have_f1 = True
+            elif "f0" in u and not have_f0:
+                have_f0 = True
                 if op.opcode == "output":
                     have_output = True
                 chosen.append(i)

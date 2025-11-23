@@ -456,26 +456,6 @@ def help_info():
     #print("  -r <file>   : Parse and print the intermediate representation")
     sys.exit(0)
 
-
-# Abstracts code for rename_ir_map and allocate_registers.
-# returns a list of operands in op that are registers
-def get_register_operands(op):
-    opc = op.opcode
-    if opc in ("add", "sub", "mult", "lshift", "rshift"):
-        # src1, src2, dest
-        return [op.op1, op.op2, op.op3]
-    elif opc == "load":
-        # source, dest
-        return [op.op1, op.op3]
-    elif opc == "store":
-    # source, dest
-        return [op.op1, op.op3]
-    elif opc == "loadI":
-        # op.op1 is a constant
-        return [op.op3]
-    else:
-        return []
-
 def read_operands(op):
     opn = op.opname
     if 3 <= opn <= 7:
@@ -484,7 +464,7 @@ def read_operands(op):
     elif opn == 0:
         return [op.op1]
     elif opn == 2:
-        return [op.op3]
+        return [op.op1, op.op3]
     else:
         return []
 
@@ -493,8 +473,6 @@ def write_operands(op):
     if 3 <= opn <= 7 or opn == 0 or opn == 1:
         # src1, src2, dest
         return [op.op3]
-    elif opn == 2:
-        return [op.op1]
     else:
         return []
 
@@ -505,7 +483,9 @@ def build_dependence_graph(ir_list):
 
     last_def = {}     # reg -> index of last defining op
     last_use = {}     # reg -> index of last using op
-    last_mem = None   # index of last memory op (load or store)
+    last_store = None
+    last_load = None
+    last_output = None
  
     for i, op in enumerate(ir_list):
         # True dependencies (RAW)
@@ -526,11 +506,47 @@ def build_dependence_graph(ir_list):
             if r in last_use and last_use[r] != i:
                 preds[i].add(last_use[r])
                 succs[last_use[r]].add(i)
-        if op.opcode in ("load", "store", "output"):
-            if last_mem is not None:
-                preds[i].add(last_mem)
-                succs[last_mem].add(i)
-            last_mem = i
+        if op.opcode == "store":
+            # store must wait for:
+            #  - any previous load (to maintain RAW on memory)
+            #  - any previous store (to maintain WAW)
+            if last_load is not None:
+                preds[i].add(last_load)
+                succs[last_load].add(i)
+
+            if last_store is not None:
+                preds[i].add(last_store)
+                succs[last_store].add(i)
+
+            if last_output is not None:
+                preds[i].add(last_output)
+                succs[last_output].add(i)
+
+            last_store = i
+
+        elif op.opcode == "load":
+            # load must wait for:
+            #  - previous store (true dependency)
+            if last_store is not None:
+                preds[i].add(last_store)
+                succs[last_store].add(i)
+
+            last_load = i
+
+
+        elif op.opcode == "output":
+            # Output must wait for all prior memory ops
+            if last_load is not None:
+                preds[i].add(last_load)
+                succs[last_load].add(i)
+            if last_store is not None:
+                preds[i].add(last_store)
+                succs[last_store].add(i)
+            if last_output is not None:
+                preds[i].add(last_output)
+                succs[last_output].add(i)
+            last_output = i
+
         # Update last_use/last_def
         for r in write_operands(op):
             last_def[r] = i
@@ -672,6 +688,61 @@ def print_schedule(scheduled_cycles):
             for op in cycle:
                 print(format_op(op))
 
+def rename_ir_ssa(ir_list):
+    current = {}   # old reg -> current new reg
+    next_reg = 0
+    renamed = []
+
+    def get_current(old):
+        # use current mapping; assume all needed defs appear before uses
+        return current[old]
+
+    def new_name_for(old):
+        nonlocal next_reg
+        nr = next_reg
+        next_reg += 1
+        current[old] = nr
+        return nr
+
+    for op in ir_list:
+        opc = op.opcode
+        if opc in ("add", "sub", "mult", "lshift", "rshift"):
+            # uses: op1, op2; def: op3
+            src1 = get_current(op.op1)
+            src2 = get_current(op.op2)
+            dst  = new_name_for(op.op3)
+            renamed.append(ILOperation(op.line, opc, src1, src2, dst))
+
+        elif opc == "load":
+            # use: base (op1); def: op3
+            base = get_current(op.op1)
+            dst  = new_name_for(op.op3)
+            renamed.append(ILOperation(op.line, opc, base, None, dst))
+
+        elif opc == "store":
+            # uses: value (op1), addr (op3); no def
+            val  = get_current(op.op1)
+            addr = get_current(op.op3)
+            renamed.append(ILOperation(op.line, opc, val, None, addr))
+
+        elif opc == "loadI":
+            # const -> def
+            dst = new_name_for(op.op3)
+            renamed.append(ILOperation(op.line, opc, op.op1, None, dst))
+
+        elif opc == "output":
+            # const only
+            renamed.append(ILOperation(op.line, opc, op.op1, None, None))
+
+        elif opc == "nop":
+            renamed.append(ILOperation(op.line, opc, None, None, None))
+
+        else:
+            # should not happen in this lab
+            renamed.append(op)
+
+    return renamed
+
 if __name__ == "__main__":
     #start = time.time()
     args = sys.argv[1:]
@@ -698,7 +769,9 @@ if __name__ == "__main__":
     #allocated_ir = allocate_registers(ir_list, k)
     #print_allocated(allocated_ir)
 
-    scheduled_cycles = list_schedule(ir_list)
+    ir_list_renamed = rename_ir_ssa(ir_list)
+
+    scheduled_cycles = list_schedule(ir_list_renamed)
     print_schedule(scheduled_cycles)
 
 

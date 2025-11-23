@@ -539,8 +539,6 @@ def build_dependence_graph(ir_list):
 
     return preds, succs
 
-
-
 def list_schedule(ir_list):
     n = len(ir_list)
     if n == 0:

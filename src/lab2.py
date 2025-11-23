@@ -602,6 +602,7 @@ def linear_scan_and_emit(intervals, num_phys):
     VRToPR = {} # maps virt_reg to ("phys"/"spill", num/addr)
     PRToVR = {i: None for i in range(allocatable)} # Maps each phys_reg to what it currently holds
     next_spill_addr = 32768
+    active_remove = {}
     allocated_ir = []
 
     VRToSpillLoc = {}
@@ -672,14 +673,15 @@ def linear_scan_and_emit(intervals, num_phys):
 
     def expire_old(current_start):
         #Expire intervals that end before the given start position.
-        for vr in list(active_map.keys()):
-            (end, _) = active_map[vr]
-            if end < current_start:
-                del active_map[vr]
-                if VRToPR.get(vr, (None, None))[0] == "phys":
-                    pr = VRToPR[vr][1]
-                    PRToVR[pr] = None
-                    del VRToPR[vr]
+        if current_start != 0:
+            if (current_start-1) in active_remove:
+                for vr in active_remove[current_start - 1]:
+                    del active_map[vr]
+                    if VRToPR.get(vr, (None, None))[0] == "phys":
+                        pr = VRToPR[vr][1]
+                        PRToVR[pr] = None
+                        del VRToPR[vr]
+                del active_remove[current_start - 1]
 
 
     def prep_write(store = False):
@@ -699,7 +701,11 @@ def linear_scan_and_emit(intervals, num_phys):
         while detachable_intervals and detachable_intervals[0][1] == threshold:
             my_interval = detachable_intervals.pop(0)
             vr = my_interval[0]
-            active_map[vr] =  (my_interval[2], 1)
+            end = my_interval[2]
+            active_map[vr] =  (end, 1)
+            if (end) not in active_remove:
+                active_remove[end] = []
+            active_remove[end].append(vr)
             if write and not store:
                 add_reg_to_map(op.op3)
 

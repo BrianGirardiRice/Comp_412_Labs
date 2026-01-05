@@ -1,18 +1,5 @@
 import sys
-import time
-
-"""
-#Token Class
-class Token:
-    def __init__(self, category, lexeme, line):
-        self.category = category
-        self.lexeme = lexeme
-        self.line = line
-
-    def __str__(self):
-        return f"{self.line}: {self.category} -> {self.lexeme}"
-"""
-    
+#import time
 
 #Scanner Class
 class Scanner:
@@ -124,6 +111,26 @@ class ILOperation:
         # linked list pointers
         self.prev = None
         self.next = None
+        OPCODES = {
+        "load": 0, "loadI": 1, "store": 2,
+        "add": 3, "sub": 4, "mult": 5,
+        "lshift": 6, "rshift": 7, "output": 8, "nop": 9
+        }
+        self.opname = OPCODES[opcode]
+
+    def latency(self):
+        if self.opcode in ("load", "store"):
+            return 6
+        if self.opcode == "mult":
+            return 3
+        return 1
+    
+    def units(self):
+        if self.opcode in ("load", "store"):
+            return {"f0"}
+        if self.opcode == "mult":
+            return {"f1"}
+        return {"f0", "f1"}
 
     def __repr__(self):
         return f"ILOp(line={self.line}, {self.opcode}, {self.op1},{self.op2},{self.op3})"
@@ -437,52 +444,339 @@ class Parser:
     
     
 def help_info():
-    print("Usage: ./412fe [mode] <filename>")
-    print("Modes:")
-    print("  -h          : Show this help message")
-    print("  -s <file>   : Scan the file and print tokens")
-    print("  -p <file>   : Parse the file and report success/errors (default)")
-    print("  -r <file>   : Parse and print the intermediate representation")
+    # print("Usage: ./412fe [mode] <filename>")
+    # print("Modes:")
+    # print(" k   : 3 < k < 64. Reallocates registers with k physical registers")
+    # print (" -x : Rename input block and print to stdout. For code check 1.")
+    # print (" -h : View help")
+
+    print("Usage: ./schedule <filename>")
+    print("Shows operation schedule for input ILOC file")
+    print (" -h : View help")
+
+
+    #print("  -s <file>   : Scan the file and print tokens")
+    #print("  -p <file>   : Parse the file and report success/errors (default)")
+    #print("  -r <file>   : Parse and print the intermediate representation")
     sys.exit(0)
-            
+
+def read_operands(op):
+    opn = op.opname
+    if 3 <= opn <= 7:
+        # src1, src2, dest
+        return [op.op1, op.op2]
+    elif opn == 0:
+        return [op.op1]
+    elif opn == 2:
+        return [op.op1, op.op3]
+    else:
+        return []
+
+def write_operands(op):
+    opn = op.opname
+    if 3 <= opn <= 7 or opn == 0 or opn == 1:
+        # src1, src2, dest
+        return [op.op3]
+    else:
+        return []
+
+def build_dependence_graph(ir_list):
+    n = len(ir_list)
+    preds = [set() for _ in range(n)]
+    succs = [set() for _ in range(n)]
+
+    last_def = {}     # reg -> index of last defining op
+    last_use = {}     # reg -> index of last using op
+    last_store = None
+    last_output = None
+    store_order = []
+ 
+    for i, op in enumerate(ir_list):
+        # True dependencies (RAW)
+        for r in read_operands(op):
+            #opn = op.opn
+            if r in last_def:
+                preds[i].add(last_def[r])
+                succs[last_def[r]].add(i)
+            #if opn == 0 or opn == 2: #Load or store
+                
+        # Output dependencies (WAW)
+        for r in write_operands(op):
+            if r in last_def and last_def[r] != i:   # avoid self-dependence for repeated writes
+                preds[i].add(last_def[r])
+                succs[last_def[r]].add(i)
+        # Anti-dependencies (WAR)
+        # for r in write_operands(op):
+        #     if r in last_use and last_use[r] != i:
+        #         preds[i].add(last_use[r])
+        #         succs[last_use[r]].add(i)
+        if op.opcode == "store":
+            # if last_store is not None:
+            #     preds[i].add(last_store)
+            #     succs[last_store].add(i)
+            store_order.append(i)
+
+            if last_output is not None:
+                preds[i].add(last_output)
+                succs[last_output].add(i)
+
+            last_store = i
+
+        elif op.opcode == "load":
+            # load must wait for:
+            #  - previous store (true dependency)
+            if last_store is not None:
+                preds[i].add(last_store)
+                succs[last_store].add(i)
+
+        elif op.opcode == "output":
+            # Output must wait for all prior memory ops
+            if last_store is not None:
+                preds[i].add(last_store)
+                succs[last_store].add(i)
+            if last_output is not None:
+                preds[i].add(last_output)
+                succs[last_output].add(i)
+            last_output = i
+
+        # Update last_use/last_def
+        for r in write_operands(op):
+            last_def[r] = i
+        for r in read_operands(op):
+            last_use[r] = i
+
+    return preds, succs, store_order
+
+def list_schedule(ir_list):
+    n = len(ir_list)
+    if n == 0:
+        return []
+
+    preds, succs, store_order = build_dependence_graph(ir_list)
+
+
+    in_deg = [len(preds[i]) for i in range(n)]
+    ready = {i for i in range(n) if in_deg[i] == 0}
+
+    # earliest issue time from latency constraints
+    earliest = [0] * n
+
+    scheduled = [None] * n  # map op index -> (cycle, slot0_or_1)
+    cycle_ops = []          # list of lists: each entry is [op_index] or [op_index1, op_index2]
+
+    cur_cycle = 0
+    unscheduled = set(range(n))
+
+    # convenience predicates
+    def can_issue_in_cycle(i, c):
+        return earliest[i] <= c
+
+    while unscheduled:
+        # collect candidates that can issue at this cycle
+        candidates = [i for i in ready if can_issue_in_cycle(i, cur_cycle)]
+
+        # resource usage flags for this cycle
+        have_f0 = False
+        have_f1 = False
+        have_output = False
+
+        chosen = []
+
+        # priority: longer latency first, then more successors, then original line
+        candidates.sort(
+            key=lambda i: (-ir_list[i].latency(), -len(succs[i]), ir_list[i].line)
+        )
+
+        has_store = False
+        for i in candidates:
+            if len(chosen) == 2:
+                break
+            op = ir_list[i]
+
+            opc = op.opcode
+
+            # special constraint: only one output per cycle
+            if opc == "output":
+                if have_output:
+                    continue
+
+            if opc == "store":
+                if has_store or store_order[0] != i:
+                    continue
+
+            u = op.units()
+            # try to assign f0 or f1 without conflict
+            if "f1" in u and not have_f1:
+                have_f1 = True
+                if op.opcode == "output":
+                    have_output = True
+                chosen.append(i)
+            elif "f0" in u and not have_f0:
+                have_f0 = True
+                if opc == "store":
+                    has_store = True
+                    store_order.pop(0)
+                if op.opcode == "output":
+                    have_output = True
+                chosen.append(i)
+            else:
+                # cannot schedule due to unit conflict
+                continue
+
+        if not chosen:
+            # no ready op can issue in this cycle; insert a nop
+            cycle_ops.append(None)  # mark nop cycle
+            cur_cycle += 1
+            continue
+
+        # record chosen ops in this cycle
+        cycle_ops.append(chosen)
+        for idx_in_cycle, i in enumerate(chosen):
+            scheduled[i] = (cur_cycle, idx_in_cycle)
+            unscheduled.remove(i)
+            ready.remove(i)
+
+        # update successors: in-degree and earliest times
+        for i in chosen:
+            op_i = ir_list[i]
+            finish_time = cur_cycle + op_i.latency()
+            for s in succs[i]:
+                in_deg[s] -= 1
+                earliest[s] = max(earliest[s], finish_time)
+                if in_deg[s] == 0:
+                    ready.add(s)
+
+        cur_cycle += 1
+
+    # build scheduled list of ILOOperation *cycles*, then flatten for printing
+    scheduled_cycles = []
+
+    for entry in cycle_ops:
+        if entry is None:
+            # nop cycle
+            scheduled_cycles.append([ILOperation(0, "nop", None, None, None)])
+        else:
+            scheduled_cycles.append([ir_list[i] for i in entry])
+
+    return scheduled_cycles
+
+def format_op(op):
+    opc = op.opcode
+    if opc in ("add", "sub", "mult", "lshift", "rshift"):
+        return f"{opc} r{op.op1}, r{op.op2} => r{op.op3}"
+    elif opc == "load":
+        return f"{opc} r{op.op1} => r{op.op3}"
+    elif opc == "store":
+        return f"{opc} r{op.op1} => r{op.op3}"
+    elif opc == "loadI":
+        return f"{opc} {op.op1} => r{op.op3}"
+    elif opc == "output":
+        return f"{opc} {op.op1}"
+    elif opc == "nop":
+        return "nop"
+    else:
+        return f"# Unknown opcode {opc}"
+
+
+def print_schedule(scheduled_cycles):
+    for cycle in scheduled_cycles:
+        if len(cycle) == 1:
+            print(format_op(cycle[0]))
+        elif len(cycle) == 2:
+            left = format_op(cycle[0])
+            right = format_op(cycle[1])
+            print(f"[ {left} ; {right} ]")
+        else:
+            # should not happen, but fall back to sequential
+            for op in cycle:
+                print(format_op(op))
+
+def rename_ir_ssa(ir_list):
+    current = {}   # old reg -> current new reg
+    next_reg = 0
+    renamed = []
+
+    def get_current(old):
+        # use current mapping; assume all needed defs appear before uses
+        return current[old]
+
+    def new_name_for(old):
+        nonlocal next_reg
+        nr = next_reg
+        next_reg += 1
+        current[old] = nr
+        return nr
+
+    for op in ir_list:
+        opc = op.opcode
+        if opc in ("add", "sub", "mult", "lshift", "rshift"):
+            # uses: op1, op2; def: op3
+            src1 = get_current(op.op1)
+            src2 = get_current(op.op2)
+            dst  = new_name_for(op.op3)
+            renamed.append(ILOperation(op.line, opc, src1, src2, dst))
+
+        elif opc == "load":
+            # use: base (op1); def: op3
+            base = get_current(op.op1)
+            dst  = new_name_for(op.op3)
+            renamed.append(ILOperation(op.line, opc, base, None, dst))
+
+        elif opc == "store":
+            # uses: value (op1), addr (op3); no def
+            val  = get_current(op.op1)
+            addr = get_current(op.op3)
+            renamed.append(ILOperation(op.line, opc, val, None, addr))
+
+        elif opc == "loadI":
+            # const -> def
+            dst = new_name_for(op.op3)
+            renamed.append(ILOperation(op.line, opc, op.op1, None, dst))
+
+        elif opc == "output":
+            # const only
+            renamed.append(ILOperation(op.line, opc, op.op1, None, None))
+
+        elif opc == "nop":
+            renamed.append(ILOperation(op.line, opc, None, None, None))
+
+        else:
+            # should not happen in this lab
+            renamed.append(op)
+
+    return renamed
+
 if __name__ == "__main__":
-    start = time.time()
-    mode = "-p"
+    #start = time.time()
     args = sys.argv[1:]
-    if "-h" in args:
+    if not args or "-h" in args:
         help_info()  # prints help and exits
 
-    # Collect flags and filename
-    flags = [arg for arg in args if arg.startswith("-")]
-    filenames = [arg for arg in args if not arg.startswith("-")]
+    if len(args) != 1:
+        print("Usage: schedule <input_file>", file=sys.stderr)
+        sys.exit(1)
 
-    # Only require exactly one filename if it's a scanning/parsing mode
-    if len(filenames) > 0:
-        filename = " ".join(filenames)
-
-    # Determine highest-priority flag
-    if flags:
-        # Priority: -h > -r > -p > -s
-        for f in ("-r", "-p", "-s"):
-            if f in flags:
-                mode = f
-                break
-
-    scanner = Scanner(filename)
-
-    if mode == "-s":
-        for token in scanner.scan():
-            print(f"{token[2]} {token[0]} {token[1]}")
-    else:  # -p or -r
+    filename = args[0]
+    try:
+        scanner = Scanner(filename)
         parser = Parser(scanner=scanner)
         success, ir_list = parser.parse()
-        if mode == "-p":
-            if success:
-                print(f"Parse succeeded. Processed {len(ir_list)} operations")
-            else:
-                print("Parse found errors.")
-        elif mode == "-r":
-            for op in ir_list:
-                print(op)
-        end = time.time()
-        print(f"Elapsed time: {end - start:.4f} seconds")
+    except FileNotFoundError:
+        print(f"ERROR: file '{filename}' not found", file=sys.stderr)
+        sys.exit(1)
+
+    if not success:
+        sys.exit(1)
+
+    ir_list = [op for op in ir_list if op.opcode != "nop"]
+    #allocated_ir = allocate_registers(ir_list, k)
+    #print_allocated(allocated_ir)
+
+    ir_list_renamed = rename_ir_ssa(ir_list)
+
+    scheduled_cycles = list_schedule(ir_list_renamed)
+    print_schedule(scheduled_cycles)
+
+
+    #end = time.time()
+    #print(f"Elapsed time: {end - start:.4f} seconds")

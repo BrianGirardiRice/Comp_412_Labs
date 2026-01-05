@@ -444,10 +444,14 @@ class Parser:
     
     
 def help_info():
-    print("Usage: ./412fe [mode] <filename>")
-    print("Modes:")
-    print(" k   : 3 < k < 64. Reallocates registers with k physical registers")
-    print (" -x : Rename input block and print to stdout. For code check 1.")
+    # print("Usage: ./412fe [mode] <filename>")
+    # print("Modes:")
+    # print(" k   : 3 < k < 64. Reallocates registers with k physical registers")
+    # print (" -x : Rename input block and print to stdout. For code check 1.")
+    # print (" -h : View help")
+
+    print("Usage: ./schedule <filename>")
+    print("Shows operation schedule for input ILOC file")
     print (" -h : View help")
 
 
@@ -485,6 +489,7 @@ def build_dependence_graph(ir_list):
     last_use = {}     # reg -> index of last using op
     last_store = None
     last_output = None
+    store_order = []
  
     for i, op in enumerate(ir_list):
         # True dependencies (RAW)
@@ -506,9 +511,10 @@ def build_dependence_graph(ir_list):
         #         preds[i].add(last_use[r])
         #         succs[last_use[r]].add(i)
         if op.opcode == "store":
-            if last_store is not None:
-                preds[i].add(last_store)
-                succs[last_store].add(i)
+            # if last_store is not None:
+            #     preds[i].add(last_store)
+            #     succs[last_store].add(i)
+            store_order.append(i)
 
             if last_output is not None:
                 preds[i].add(last_output)
@@ -539,36 +545,14 @@ def build_dependence_graph(ir_list):
         for r in read_operands(op):
             last_use[r] = i
 
-    return preds, succs
-
-def compute_distance_to_exit(ir_list, succs):
-    n = len(ir_list)
-    dist = [0] * n
-
-    # simple reverse topological-like order
-    order = sorted(range(n), key=lambda i: -len(succs[i]))
-
-    changed = True
-    while changed:
-        changed = False
-        for i in order:
-            best = 0
-            for s in succs[i]:
-                cand = ir_list[s].latency() + dist[s]
-                if cand > best:
-                    best = cand
-            if best != dist[i]:
-                dist[i] = best
-                changed = True
-    return dist
+    return preds, succs, store_order
 
 def list_schedule(ir_list):
     n = len(ir_list)
     if n == 0:
         return []
 
-    preds, succs = build_dependence_graph(ir_list)
-    dist = compute_distance_to_exit(ir_list, succs)
+    preds, succs, store_order = build_dependence_graph(ir_list)
 
 
     in_deg = [len(preds[i]) for i in range(n)]
@@ -600,21 +584,25 @@ def list_schedule(ir_list):
 
         # priority: longer latency first, then more successors, then original line
         candidates.sort(
-        key=lambda i: (-dist[i],
-            -ir_list[i].latency(),
-            -len(succs[i]),
-            ir_list[i].line)
+            key=lambda i: (-ir_list[i].latency(), -len(succs[i]), ir_list[i].line)
         )
+
+        has_store = False
         for i in candidates:
             if len(chosen) == 2:
                 break
             op = ir_list[i]
 
+            opc = op.opcode
+
             # special constraint: only one output per cycle
-            if op.opcode == "output":
+            if opc == "output":
                 if have_output:
                     continue
-                
+
+            if opc == "store":
+                if has_store or store_order[0] != i:
+                    continue
 
             u = op.units()
             # try to assign f0 or f1 without conflict
@@ -625,6 +613,9 @@ def list_schedule(ir_list):
                 chosen.append(i)
             elif "f0" in u and not have_f0:
                 have_f0 = True
+                if opc == "store":
+                    has_store = True
+                    store_order.pop(0)
                 if op.opcode == "output":
                     have_output = True
                 chosen.append(i)
